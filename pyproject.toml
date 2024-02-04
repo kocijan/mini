@@ -4,7 +4,7 @@ requires = [
   "nanobind",
   "ninja; platform_system!='Windows'",
   "scikit-build==0.14.0",
-  "setuptools>=42",
+  "setuptools == 68.2.2",
   "wheel",
 ]
 

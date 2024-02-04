@@ -2,6 +2,7 @@
 
 #include <deque>
 #include <iostream>
+#include <utility>
 
 namespace mini {
 
@@ -27,50 +28,54 @@ constexpr static std::uint8_t kNucleotideCoder[] = {
     255,   3, 255, 255, 255, 255, 255, 255
 };
 
-constexpr static char kNucleotideDecoder[] = {
-    'A', 'C', 'G', 'T'
-};
-
 /* clang-format on */
 
 }  // namespace detail
 
 auto Hash(std::uint64_t val, std::uint64_t const kMask) -> std::uint64_t {
-  val = ((~val) + (val << 21)) & kMask;
-  val = val ^ (val >> 24);
-  val = ((val + (val << 3)) + (val << 8)) & kMask;
-  val = val ^ (val >> 14);
-  val = ((val + (val << 2)) + (val << 4)) & kMask;
-  val = val ^ (val >> 28);
-  val = (val + (val << 31)) & kMask;
+  val = ~val + (val << 21);
+  val = val ^ val >> 24;
+  val = val + (val << 3) + (val << 8);
+  val = val ^ val >> 14;
+  val = val + (val << 2) + (val << 4);
+  val = val ^ val >> 28;
+  val = val + (val << 31);
   return val;
 }
 
 auto Minimize(std::string const& seq, std::uint8_t const kmer_len,
               std::uint8_t const win_len) -> std::vector<KMer> {
   auto dst = std::vector<KMer>();
-  auto const kMask = (1ULL << (kmer_len * 2ULL)) - 1ULL;
+  auto const kMask = (1ULL << kmer_len) - 1ULL;
 
   auto const hash = [kMask](std::uint64_t val) -> std::uint64_t {
     return Hash(val, kMask);
   };
 
-  auto curr_kmer_val = std::uint64_t(0);
-  auto rc_curr_kmer_val = std::uint64_t(0);
+  auto curr_kmer_val_lo = std::uint64_t(0);
+  auto curr_kmer_val_hi = std::uint64_t(0);
+  auto rc_curr_kmer_val_lo = std::uint64_t(0);
+  auto rc_curr_kmer_val_hi = std::uint64_t(0);
   auto window = std::deque<std::pair<std::uint64_t, KMer>>();
 
-  auto const shift_kmer = [kMask](std::uint64_t const kmer,
-                                  char const base) -> std::uint64_t {
-    return ((kmer << 2ULL) |
-            detail::kNucleotideCoder[static_cast<std::size_t>(base)]) &
-           kMask;
+  auto const shift_kmer = [kMask](std::uint64_t const kmer_lo, std::uint64_t const kmer_hi,
+                                  char const base) -> std::pair<std::uint64_t, std::uint64_t> {
+    return std::make_pair(((kmer_lo << 1ULL) |
+            (detail::kNucleotideCoder[static_cast<std::size_t>(base)] & 0b01
+            )) & kMask,
+            ((kmer_hi << 1ULL) |
+            (detail::kNucleotideCoder[static_cast<std::size_t>(base)] & 0b10
+            )) & kMask);
   };
 
-  auto const shift_rc_kmer = [kmer_len](std::uint64_t const kmer,
-                                        char const base) -> std::uint64_t {
-    return (kmer >> 2ULL) |
-           ((3ULL ^ detail::kNucleotideCoder[static_cast<std::size_t>(base)])
-            << ((kmer_len - 1ULL) * 2ULL));
+  auto const shift_rc_kmer = [kmer_len](std::uint64_t const kmer_lo, std::uint64_t const kmer_hi,
+                                        char const base) -> std::pair<std::uint64_t, std::uint64_t> {
+    return std::make_pair((kmer_lo >> 1ULL) |
+           (((3ULL ^ detail::kNucleotideCoder[static_cast<std::size_t>(base)]) & 0b01)
+            << (kmer_len - 1ULL)),
+            (kmer_hi >> 1ULL) |
+           (((3ULL ^ detail::kNucleotideCoder[static_cast<std::size_t>(base)]) & 0b10)
+            << (kmer_len - 1ULL)));
   };
 
   auto const window_push = [&window](std::uint64_t const hash,
@@ -89,15 +94,18 @@ auto Minimize(std::string const& seq, std::uint8_t const kmer_len,
   };
 
   for (auto i = 0U; i < seq.size(); ++i) {
-    curr_kmer_val = shift_kmer(curr_kmer_val, seq[i]);
-    rc_curr_kmer_val = shift_rc_kmer(rc_curr_kmer_val, seq[i]);
+    std::tie(curr_kmer_val_lo, curr_kmer_val_hi) = shift_kmer(curr_kmer_val_lo, curr_kmer_val_hi, seq[i]);
+    std::tie(rc_curr_kmer_val_lo, rc_curr_kmer_val_hi) = shift_rc_kmer(rc_curr_kmer_val_lo, rc_curr_kmer_val_hi, seq[i]);
     if (i + 1U >= kmer_len) {
-      if (curr_kmer_val < rc_curr_kmer_val) {
-        window_push(hash(curr_kmer_val),
-                    KMer(curr_kmer_val, i + 1U - kmer_len, 0));
-      } else if (curr_kmer_val > rc_curr_kmer_val) {
-        window_push(hash(rc_curr_kmer_val),
-                    KMer(rc_curr_kmer_val, i + 1U - kmer_len, 1));
+      if (curr_kmer_val_hi < rc_curr_kmer_val_hi) {
+        auto kmer_hash = hash(curr_kmer_val_hi) + hash(curr_kmer_val_lo);
+        window_push(kmer_hash,
+                    KMer(kmer_hash, i + 1U - kmer_len, 0));
+      } else if (curr_kmer_val_hi > rc_curr_kmer_val_hi)
+      {
+        auto kmer_hash = hash(rc_curr_kmer_val_hi) + hash(rc_curr_kmer_val_lo);
+        window_push(kmer_hash,
+                    KMer(kmer_hash, i + 1U - kmer_len, 1));
       }
     }
     if (i >= kmer_len - 1U + win_len - 1U) {
@@ -112,16 +120,5 @@ auto Minimize(std::string const& seq, std::uint8_t const kmer_len,
   return dst;
 }
 
-auto DecodeKMer(KMer const& kmer, std::uint32_t const kmer_len) -> std::string {
-  auto dst = std::string(kmer_len, '\0');
-
-  auto encoded = kmer.value();
-  for (auto i = 0; i < kmer_len; ++i) {
-    dst[kmer_len - 1U - i] = detail::kNucleotideDecoder[encoded & 0b11];
-    encoded >>= 2ULL;
-  }
-
-  return dst;
-}
 
 }  // namespace mini
